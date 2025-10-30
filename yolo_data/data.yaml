@@ -1,0 +1,8 @@
+path: d:\Coding\Projects\Classifier\Waste_Classifier\yolo_data
+train: images/train
+val: images/val
+names:
+  0: Capacitor
+  1: IC
+  2: Processor
+  3: Tan_Cap

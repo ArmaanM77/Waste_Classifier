@@ -9,11 +9,10 @@ import cv2
 import numpy as np
 from ultralytics import YOLO
 
-# ---- Fixed classes ----
 CLASS_NAMES = ["Capacitor", "IC", "Processor", "Tan_Cap"]
+PROJECT_ROOT = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 
 def assert_highgui() -> None:
-    """Ensure OpenCV has HighGUI support; exit with a clear message if not."""
     try:
         cv2.namedWindow("__probe__", cv2.WINDOW_NORMAL)
         cv2.destroyWindow("__probe__")
@@ -24,11 +23,13 @@ def assert_highgui() -> None:
               "    pip install --no-cache-dir opencv-python\n")
         sys.exit(3)
 
-def recent_best_weights(runs_dir: Path = Path("runs") / "detect") -> Path | None:
-    """Pick latest runs/detect/*/weights/best.* automatically."""
-    cands = sorted(runs_dir.glob("*/weights/best.*"),
-                   key=lambda p: p.stat().st_mtime, reverse=True)
-    return cands[0] if cands else None
+def recent_best_weights() -> Path | None:
+    runs_dir = PROJECT_ROOT / "yolo_data" / "runs"
+    if not runs_dir.exists():
+        return None
+    bests = sorted(runs_dir.glob("**/weights/best.pt"), key=lambda p: p.stat().st_mtime, reverse=True)
+    lasts = sorted(runs_dir.glob("**/weights/last.pt"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return bests[0] if bests else (lasts[0] if lasts else None)
 
 def is_centered(xyxy, W, H, frac=0.30):
     x1, y1, x2, y2 = xyxy
@@ -40,7 +41,7 @@ def is_centered(xyxy, W, H, frac=0.30):
 
 def parse_args():
     ap = argparse.ArgumentParser(description="YOLO live viewer (CPU, GUI required)")
-    ap.add_argument("--model", type=str, default="", help="Path to model (e.g., runs/detect/exp/weights/best.pt)")
+    ap.add_argument("--model", type=str, default="", help="Weights path; default: latest yolo_data/runs/**/weights/(best|last).pt")
     ap.add_argument("--cam", type=int, default=0, help="Camera index")
     ap.add_argument("--imgsz", type=int, default=416, help="Inference image size")
     ap.add_argument("--conf", type=float, default=0.800, help="Confidence threshold")
@@ -55,18 +56,15 @@ def main():
     args = parse_args()
     assert_highgui()
 
-    # Resolve model
     model_path = Path(args.model) if args.model else (recent_best_weights() or Path("yolov8n.pt"))
-    if not Path(model_path).exists():
+    if not model_path.exists():
         print(f"[FATAL] Model not found: {model_path}")
         sys.exit(4)
     print(f"[info] Using model: {model_path}")
     print(f"[info] Classes: {CLASS_NAMES}")
 
-    # Load model on CPU
     model = YOLO(str(model_path))
 
-    # Open camera (DirectShow on Windows helps with some webcams)
     cap = cv2.VideoCapture(args.cam, cv2.CAP_DSHOW) if sys.platform.startswith("win") else cv2.VideoCapture(args.cam)
     if not cap.isOpened():
         print(f"[FATAL] Could not open webcam index {args.cam}.")
@@ -75,7 +73,6 @@ def main():
     if args.width > 0:  cap.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)
     if args.height > 0: cap.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
 
-    # Optional writer
     writer = None
     if args.save:
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
@@ -87,7 +84,6 @@ def main():
 
     history = deque(maxlen=5)
     smoothed_fps = None
-
     cv2.namedWindow("Live Detection (press q to quit)", cv2.WINDOW_NORMAL)
 
     try:
@@ -100,7 +96,6 @@ def main():
             H, W = frame.shape[:2]
             t0 = time.time()
 
-            # Inference (CPU)
             res = model.predict(source=frame, imgsz=args.imgsz, conf=args.conf, verbose=False, device="cpu")
             preds = []
             for r in res:
@@ -112,12 +107,10 @@ def main():
                     x1, y1, x2, y2 = map(int, b.xyxy.squeeze().cpu().numpy().tolist())
                     preds.append((cls_id, conf, (x1, y1, x2, y2)))
 
-            # Draw center box
             fx, fy = int(0.5 * W), int(0.5 * H)
             hw, hh = int(0.5 * args.center_frac * W), int(0.5 * args.center_frac * H)
             cv2.rectangle(frame, (fx - hw, fy - hh), (fx + hw, fy + hh), (128, 128, 128), 1)
 
-            # Draw detections
             any_yes = False
             for cls_id, conf, (x1, y1, x2, y2) in preds:
                 centered = is_centered((x1, y1, x2, y2), W, H, args.center_frac)
@@ -134,7 +127,6 @@ def main():
             cv2.putText(frame, status, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1.0,
                         (0, 255, 0) if stable_yes else (0, 0, 255), 2)
 
-            # FPS overlay
             if args.show_fps:
                 dt = max(1e-6, time.time() - t0)
                 fps = 1.0 / dt
